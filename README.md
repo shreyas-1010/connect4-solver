@@ -1,2 +1,143 @@
-# connect4-solver
-Perfect Connect Four Solver in C++
+# Connect Four Solver (C++17)
+
+A perfect-play solver for standard 7x6 Connect Four. Given any position it computes the exact
+game-theoretic outcome (win / draw / loss and how fast), and it includes a command-line mode so
+you can play against it. No dependencies beyond the C++ standard library.
+
+## Features
+
+- **Bitboard representation**: the whole position is two 64-bit integers.
+- **Branch-free win detection**: bit-shift tricks find every winning cell at once.
+- **Negamax + alpha-beta pruning** with **forced-move / losing-move pruning** (never play under an
+  opponent's threat, always block a single threat, detect unstoppable double threats).
+- **Move ordering**: centre columns first, then moves that create the most threats.
+- **Transposition table** (about 64 MB) storing exact / lower-bound / upper-bound results.
+- **Null-window binary search** over the score range.
+- **Play mode**: heuristic depth-limited search in the opening, exact perfect play from ply 14 on.
+- **Verified** against an independent brute-force reference solver (see Testing).
+
+## Quick start
+
+```bash
+make              # builds ./connect4
+make test         # runs the regression tests
+./connect4 solve 4453
+./connect4 play
+```
+
+Requires `g++` or `clang++` with C++17 support, and `make`. See "Step-by-step" below for details.
+
+## Usage
+
+### Solve a position
+
+Positions are move sequences, where each digit is the column (1-7) played, alternating players
+starting with the first player.
+
+```
+$ ./connect4 solve 4453
+4453  score=-2  nodes=73064758  time=6711.96ms
+```
+
+Reading the score from the point of view of the player **to move**:
+
+| score | meaning |
+|-------|---------|
+| `> 0` | side to move wins; larger = faster win. `1` = win with the very last stone |
+| `0`   | draw with perfect play |
+| `< 0` | side to move loses; more negative = faster loss |
+
+Exactly: a win after which the winner still holds `k` unplayed stones scores `k + 1`.
+
+Batch mode reads one sequence per line from stdin. Add `--weak` to only compute the
+sign (win / draw / loss) instead of the exact score:
+
+```bash
+./connect4 solve < tests/positions.txt
+```
+
+### Play against the solver
+
+```bash
+./connect4 play        # you move first (X)
+./connect4 play ai     # the AI moves first
+```
+
+Enter a column number from 1 to 7. The AI prints its per-column scores before it moves.
+Opening moves (first 14 plies) use a heuristic search because exact solving from an empty
+board takes minutes; after that the AI plays perfectly.
+
+## Benchmarks
+
+Measured on an Intel Core i5-8265U (single thread), `make` default flags (`-O3`), cold transposition table:
+
+| position (moves played) | stones | score | nodes | time |
+|-------------------------|--------|-------|-------|------|
+| `444444`                | 6      | 1     | 44.6M | 4.1 s |
+| `4435`                  | 4      | -2    | 63.8M | 5.8 s |
+| `4453`                  | 4      | -2    | 73.1M | 6.7 s |
+| typical 20+ stone midgame | 20+  | -     | 10^2 - 10^6 | < 0.1 s |
+
+Solving from the very first moves is slow because there is no opening book (see Future work).
+Your numbers will vary with hardware.
+
+## How it works
+
+**Bitboards.** Each column uses 7 bits (6 cells plus a sentinel bit), so shifting never wraps into
+the next column. `cur` holds the stones of the player to move and `mask` all stones; the opponent's
+stones are `cur ^ mask`. `cur + mask` is a unique key for the position.
+Dropping a stone is `mask |= mask + bottom(col)`.
+
+**Win detection.** To find every cell that would complete four-in-a-row, shift the player's stones
+by 1 (vertical), 7 (horizontal), 6 and 8 (diagonals) and AND the results. That finds all
+threats in about 30 bit operations with no loops over the board.
+
+**Pruning.** If the player to move can win immediately, return. If the opponent has two threats
+the position is lost. If the opponent has one threat, the only legal move worth considering is
+blocking it. Moves directly underneath an opponent's winning cell are never played.
+
+**Search.** Negamax with alpha-beta, static score bounds from the number of stones left, and a
+transposition table. The outer loop binary-searches the exact score with null-window probes
+(`negamax(P, med, med+1)`), which is much cheaper than a full-window search.
+
+## Project layout
+
+```
+src/position.hpp    bitboard position, move generation, win detection
+src/solver.hpp      negamax / alpha-beta, transposition table, heuristic search
+src/main.cpp        command-line interface (solve / play)
+tests/              regression positions, reference solver, randomized cross-check
+Makefile
+```
+
+## Testing
+
+```bash
+make test         # 30 positions with expected scores in tests/positions.txt
+make crosscheck   # random positions: optimized solver vs. naive brute-force reference
+```
+
+The expected scores in `tests/positions.txt` were generated by `tests/reference_solver.cpp`, a
+naive solver with no pruning or caching, so the optimized solver is checked against independent
+code rather than against itself.
+
+## Future work
+
+- Opening book (precomputed scores for the first ~10 plies) to make full solves fast.
+- Better move ordering and a larger / smarter-replacement transposition table.
+- Symmetry reduction (mirror positions share a score).
+- Multi-threaded root search.
+
+## Credits
+
+This project implements published techniques; the ideas belong to their authors:
+
+- Pascal Pons, ["Solving Connect 4: how to build a perfect AI"](http://blog.gamesolver.org) -
+  the bitboard layout, win-detection shifts, non-losing-move pruning, score convention and
+  binary-search structure follow this tutorial.
+- [Chessprogramming wiki](https://www.chessprogramming.org) - alpha-beta, transposition tables,
+  move ordering.
+- John Tromp's work on solving Connect-4.
+
+The code in this repository is an independent implementation (own transposition table, heuristic
+opening search, CLI, tests).
