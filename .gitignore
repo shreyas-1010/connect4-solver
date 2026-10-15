@@ -1,0 +1,6 @@
+*.exe
+*.o
+*.part
+*.tmp
+connect4
+reference
