@@ -19,7 +19,7 @@ while tested < n_target:
         c = random.choice([i for i in range(7) if heights[i] < 6])
         heights[c] += 1
         seq += str(c + 1)
-    fast = subprocess.run(["./connect4", "solve", seq], capture_output=True, text=True).stdout
+    fast = subprocess.run(["./connect4", "solve", "--no-book", seq], capture_output=True, text=True).stdout
     if "invalid" in fast:  # game already over in this random sequence
         continue
     try:

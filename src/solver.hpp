@@ -1,23 +1,28 @@
-// solver.hpp - negamax / alpha-beta solver with a transposition table.
+// solver.hpp - negamax / alpha-beta solver with a transposition table and opening-book lookup.
 #pragma once
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
 
+#include "book.hpp"
 #include "position.hpp"
 
 class Solver {
-    struct Entry {
-        u64 key;
-        int8_t val;
-        uint8_t flag;  // 1 = lower bound, 2 = upper bound, 3 = exact
-    };
-    static constexpr size_t TT_BITS = 22;  // 4M entries ~ 64 MB
-    std::vector<Entry> tt;
+    // Transposition-table entry packed into one 64-bit word:
+    //   bits 0-48  position key = cur + mask (49 bits)
+    //   bits 49-54 score + 32            (6 bits)
+    //   bits 55-56 flag: 1 = lower bound, 2 = upper bound, 3 = exact, 0 = empty
+    static constexpr u64 KEY_MASK = (1ULL << 49) - 1;
+    std::vector<u64> tt;
+    unsigned ttBits;
     std::array<int, W> order;
+    const Book* book = nullptr;
 
-    Entry& slot(u64 key) { return tt[(key * 0x9E3779B97F4A7C15ULL) >> (64 - TT_BITS)]; }
+    size_t index(u64 key) const { return (key * 0x9E3779B97F4A7C15ULL) >> (64 - ttBits); }
+    void store(u64 key, int val, int flag) {
+        tt[index(key)] = key | (u64(val + 32) << 49) | (u64(flag) << 55);
+    }
 
     int negamax(const Position& P, int alpha, int beta) {
         nodes++;
@@ -34,11 +39,13 @@ class Solver {
         if (beta > hi) { beta = hi; if (alpha >= beta) return beta; }
 
         u64 key = P.key();
-        Entry& e = slot(key);
-        if (e.key == key && e.flag) {
-            if (e.flag & 1) alpha = std::max(alpha, (int)e.val);
-            if (e.flag & 2) beta = std::min(beta, (int)e.val);
-            if (e.flag == 3 || alpha >= beta) return e.val;
+        u64 e = tt[index(key)];
+        int flag = int((e >> 55) & 3);
+        if ((e & KEY_MASK) == key && flag) {
+            int val = int((e >> 49) & 63) - 32;
+            if (flag & 1) alpha = std::max(alpha, val);
+            if (flag & 2) beta = std::min(beta, val);
+            if (flag == 3 || alpha >= beta) return val;
         }
 
         // Order moves: most own threats first, ties broken by centre preference.
@@ -60,14 +67,12 @@ class Solver {
             P2.play(mv[i].second);
             int score = -negamax(P2, -beta, -alpha);
             if (score >= beta) {
-                Entry& s = slot(key);
-                s = {key, (int8_t)score, 1};
+                store(key, score, 1);
                 return score;
             }
             if (score > alpha) alpha = score;
         }
-        Entry& s = slot(key);
-        s = {key, (int8_t)alpha, (uint8_t)(alpha > alpha0 ? 3 : 2)};
+        store(key, alpha, alpha > alpha0 ? 3 : 2);
         return alpha;
     }
 
@@ -100,14 +105,17 @@ class Solver {
 public:
     unsigned long long nodes = 0;
 
-    Solver() : tt(1ULL << TT_BITS) {
+    explicit Solver(unsigned bits = 22) : tt(1ULL << bits), ttBits(bits) {
         for (int i = 0; i < W; i++) order[i] = W / 2 + (1 - 2 * (i % 2)) * (i + 1) / 2;
         reset();
     }
-    void reset() { std::memset(tt.data(), 0, tt.size() * sizeof(Entry)); nodes = 0; }
+    void reset() { std::fill(tt.begin(), tt.end(), 0); nodes = 0; }
+    void setBook(const Book* b) { book = b; }
 
     // Exact score (or just win/draw/loss sign if `weak`).
     int solve(const Position& P, bool weak = false) {
+        int bs;
+        if (book && book->lookup(P, bs)) return weak ? (bs > 0) - (bs < 0) : bs;
         if (P.canWinNext()) return (W * H + 1 - P.moves) / 2;
         int lo = -(W * H - P.moves) / 2, hi = (W * H + 1 - P.moves) / 2;
         if (weak) { lo = -1; hi = 1; }

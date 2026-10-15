@@ -50,6 +50,14 @@ inline u64 winningCells(u64 pos, u64 mask) {
     return r & (BOARD ^ mask);
 }
 
+// Mirror a bitboard left-right (column c <-> column W-1-c).
+inline u64 mirrorBits(u64 x) {
+    u64 r = 0;
+    for (int c = 0; c < W; c++)
+        r |= ((x >> (c * (H + 1))) & ((1ULL << (H + 1)) - 1)) << ((W - 1 - c) * (H + 1));
+    return r;
+}
+
 struct Position {
     u64 cur = 0;   // stones of the player to move
     u64 mask = 0;  // all stones
@@ -61,7 +69,27 @@ struct Position {
         mask |= mask + botMask(c);
         moves++;
     }
-    u64 key() const { return cur + mask; }  // unique per position
+    u64 key() const { return cur + mask; }  // unique per position (fits in 49 bits)
+    // A column holds k stones, so mask_col = 2^k - 1 and key_col = mask_col + cur_col never carries
+    // into the next column. Mirroring the key therefore equals the key of the mirrored position,
+    // and a position and its mirror image share one canonical key (and the same score).
+    u64 canonicalKey() const {
+        u64 k = key(), m = mirrorBits(k);
+        return k < m ? k : m;
+    }
+    // Inverse of key(): rebuild a position from its key.
+    static Position fromKey(u64 key) {
+        Position P;
+        for (int c = 0; c < W; c++) {
+            u64 v = (key >> (c * (H + 1))) & ((1ULL << (H + 1)) - 1);
+            int k = 63 - __builtin_clzll(v + 1);  // stones in this column
+            u64 m = (1ULL << k) - 1;
+            P.mask |= m << (c * (H + 1));
+            P.cur |= (v - m) << (c * (H + 1));
+        }
+        P.moves = __builtin_popcountll(P.mask);
+        return P;
+    }
     u64 possible() const { return (mask + BOTTOM) & BOARD; }
     u64 winning() const { return winningCells(cur, mask); }
     u64 opponentWinning() const { return winningCells(cur ^ mask, mask); }
